@@ -1,0 +1,236 @@
+---
+title: "AuthLog"
+author: "Robert Baranic"
+date: "`r Sys.Date()`"
+header-includes:
+  \usepackage{fvextra}
+  \DefineVerbatimEnvironment{Highlighting}{Verbatim}{breaklines,commandchars=\\\{\}}
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+library(knitr)
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(devtools)
+library(stringr)
+library(lubridate)
+getwd()
+list.files()
+```
+
+```{r}
+source_url("https://raw.githubusercontent.com/duncantl/ST141B_S23/main/Data/Weblogs/getCaptures.R")
+lines = readLines("MergedAuth.log")
+
+head(lines, n = 20)
+```
+
+First step is to read in the data as a table. It appears to be a unique form, so the best way to pull data out would be to use regex and capture groups to read it into a dataframe. These were the iterative processes used to obtain the regex below. Each part was added one at a time through gregexpr. Same regex is fed to grepl so we can table the results to see how many lines it matched. I then explore the lines not matched so I can update the expression until everything is matched.
+
+```{r}
+rx = "^(?P<time>[A-Za-z]{3}[ ]+[0-9]+ [0-9:]+) (?P<ip>[A-Za-z0-9]+-[0-9\\-]+|combo|LabSZ|authorMacBook-Pro) (?P<app>[A-Za-z0-9\\-\\(\\)\\_\\. ]+(?=\\[|:))(?P<pid>\\[[0-9]+\\]:|\\[[0-9]+\\]| |:)(?P<message>.*$)"
+
+x = gregexpr(rx, lines, perl = T)
+
+y = grepl(rx, lines, perl = T)
+
+table(y)
+
+head(lines[!y], n = 20)
+tail(lines[!y], n = 20)
+```
+
+Now, we must clean up blank lines. Thus, only lines that don't match any of the regex are the start of the log files.
+```{r}
+lines = lines[!lines == ""]
+head(lines)
+```
+
+Next, we split the lines by the log file. All five log files are headed by "#" at the beginning of the line so they are easy to split on.
+```{r}
+grep("^#", lines)
+
+logStart = grepl("^#", lines)
+table(logStart)
+
+splitter = cumsum(logStart)
+
+lines2 = split(lines, splitter)
+```
+
+Next, we must use the regex to put this file into a dataframe. I was running into some errors with GetCapture(), so here is the alternative I found:
+```{r}
+head(regmatches(lines[!logStart], regexec(rx, lines[!logStart], perl = T)))
+#https://stackoverflow.com/questions/952275/regex-group-capture-in-r-with-multiple-capture-groups
+```
+Using do.call(rbind), we coerce the list into a dataframe, so now we must clean it.
+```{r}
+regexList = regmatches(lines[!logStart], regexec(rx, lines[!logStart], perl = T))
+df = as.data.frame(do.call(rbind, regexList))
+```
+
+The first thing I want to do is change the first column to the log name. The first column is currently the whole line that is matched with regmatches, so it will not be used. The splitter used originally has 99965 length since it includes the lines with the log names. The dataframe has 99960 lines since it does not include these lines. In order to get a length of 99960 I did some unusual manipulation so that we get a vector of 99960 for the splitter such that we can subset the lines correctly with the corresponding log file.
+```{r}
+sum(sapply(lines2, length))
+logname = splitter - 5 * logStart
+logname = logname[logname >= 1]
+
+df$V1 = lines[logStart][logname]
+```
+
+Here is validation that all valid PIDs are numbers. Below cleans up the PIDs such that there are no [] or : in the entry. When I table the entries that are not [0-9]+ we get 946 empty strings showing that the rest are numbers. Then we use as.numeric to convert them to numbers and the empty strings are NA.
+```{r}
+colnames(df) = c("logFile", "date-time", "loggingHost", "app", "PID", "message")
+
+df$PID = gsub("\\[|\\]|\\:", "", df$PID)
+table(df$PID[!grepl("[0-9]+", df$PID)])
+
+df$PID = as.numeric(df$PID)
+
+df$message = trimws(df$message, "left")
+```
+
+Here is validation for the number of lines in each log file.
+```{r}
+table(df$logFile)
+```
+
+To make finding the range of dates easier, we will convert the date and time to POSIXct first, then explore. POSIXct defaults to putting the year as 2023 even though there is not a date in the log files. I do not believe this will impact the exploration of dates. Below is the min and max dates for the total log file and verification that there are no NA values.
+```{r}
+df$`date-time` = as.POSIXct(strptime(df$`date-time`, "%b %d %H:%M:%S"))
+
+sum(is.na(df$`date-time`))
+
+min(df$`date-time`)
+max(df$`date-time`)
+```
+
+Below is date range for auth.log
+```{r}
+min(df$`date-time`[df$logFile == "# auth.log"])
+max(df$`date-time`[df$logFile == "# auth.log"])
+
+max(df$`date-time`[df$logFile == "# auth.log"]) - min(df$`date-time`[df$logFile == "# auth.log"])
+```
+
+Below is date range for auth2.log
+```{r}
+min(df$`date-time`[df$logFile == "# auth2.log"])
+max(df$`date-time`[df$logFile == "# auth2.log"])
+
+max(df$`date-time`[df$logFile == "# auth2.log"]) - min(df$`date-time`[df$logFile == "# auth2.log"])
+```
+
+Below is date range for loghub/Linux/Linux_2k.log
+```{r}
+min(df$`date-time`[df$logFile == "# loghub/Linux/Linux_2k.log"])
+max(df$`date-time`[df$logFile == "# loghub/Linux/Linux_2k.log"])
+
+max(df$`date-time`[df$logFile == "# loghub/Linux/Linux_2k.log"]) - min(df$`date-time`[df$logFile == "# loghub/Linux/Linux_2k.log"])
+```
+
+Below is date range for loghub/Mac/Mac_2k.log
+```{r}
+min(df$`date-time`[df$logFile == "# loghub/Mac/Mac_2k.log"])
+max(df$`date-time`[df$logFile == "# loghub/Mac/Mac_2k.log"])
+
+max(df$`date-time`[df$logFile == "# loghub/Mac/Mac_2k.log"]) - min(df$`date-time`[df$logFile == "# loghub/Mac/Mac_2k.log"])
+```
+
+Below is date range for loghub/OpenSSH/SSH_2k.log
+```{r}
+min(df$`date-time`[df$logFile == "# loghub/OpenSSH/SSH_2k.log"])
+max(df$`date-time`[df$logFile == "# loghub/OpenSSH/SSH_2k.log"])
+
+max(df$`date-time`[df$logFile == "# loghub/OpenSSH/SSH_2k.log"]) - min(df$`date-time`[df$logFile == "# loghub/OpenSSH/SSH_2k.log"])
+```
+
+Now we will explore the application names. To check if the applications have number we will use grepl. It appears that numbers only appear as version numbers.
+```{r}
+df$app[grepl("[0-9]", df$app)]
+```
+
+Next, we will explore the logging host. All have the same logging host except for loghub/Mac/Mac_2k.log which has many different logging hosts.
+```{r}
+table(df$loggingHost[df$logFile == "# auth.log"])
+
+table(df$loggingHost[df$logFile == "# auth2.log"])
+
+table(df$loggingHost[df$logFile == "# loghub/Linux/Linux_2k.log"])
+
+table(df$loggingHost[df$logFile == "# loghub/Mac/Mac_2k.log"])
+
+table(df$loggingHost[df$logFile == "# loghub/OpenSSH/SSH_2k.log"])
+```
+
+Lastly, we will explore the frequency of apps used by the logging hosts.
+```{r}
+table(df$app[df$loggingHost == "ip-172-31-27-153"])
+
+table(df$app[df$loggingHost == unique(df$loggingHost[df$logFile == "# auth2.log"])])
+
+table(df$app[df$loggingHost == unique(df$loggingHost[df$logFile == "# loghub/Linux/Linux_2k.log"])])
+
+table(df$app[df$logFile == "# loghub/Mac/Mac_2k.log"])
+
+table(df$app[df$loggingHost == "LabSZ"])
+```
+
+Logins:
+valid logins from hosts:
+```{r}
+validLogins = df$message[grepl("Connection from|Accepted|New session", df$message)]
+
+table(do.call(rbind, regmatches(validLogins, regexec("(?<=for |user )[A-Za-z0-9\\_]+", validLogins, perl = T)))) #usernames
+
+table(do.call(rbind, regmatches(validLogins, regexec("(?<=from )[0-9.]+", validLogins, perl = T)))) #ip
+
+valid.ip = do.call(rbind, regmatches(validLogins, regexec("(?<=from )[0-9.]+", validLogins, perl = T)))
+```
+
+invalid logins: Since there are a lot, I will put them into a dataframe so we can keep track of the usernames and associated IPs
+```{r}
+invalidLogins = df$message[grepl("^Invalid\\b |^error", df$message)]
+
+invalid.user = as.data.frame(do.call(rbind, regmatches(invalidLogins, regexec("(?<=user |for )[A-Za-z0-9\\.\\_\\\\\\-]+", invalidLogins, perl = T))))#usernames
+
+invalid.ip = do.call(rbind, regmatches(invalidLogins, regexec("(?<=from )[0-9\\.]+", invalidLogins, perl = T)))
+
+invalid.user$ip = invalid.ip[grepl("(?<=user |for )[A-Za-z0-9\\.\\_\\\\\\-]+", invalidLogins, perl = T)]
+
+head(invalid.user)
+
+length(table(invalid.user$ip)[table(invalid.user$ip) > 1]) #all ips with multiple logins
+
+unique(invalid.user$ip[invalid.ip %in% valid.ip]) #invalid ips that were valid at some point
+
+x = sapply(unique(invalid.user$V1[table(invalid.user$V1) > 1]), function(x) length(unique(invalid.user$ip[invalid.user$V1 == x])))
+x[x > 1] #all invalid users that used more than 1 ip
+
+max.ip.lines = df$message[grepl("\\bmaximum\\b", df$message)]
+max.ip = do.call(rbind, regmatches(max.ip.lines, regexec("(?<=from )[0-9\\.]+", max.ip.lines, perl = T)))#ips with maximum authentication attempts
+head(max.ip)
+```
+
+Sudo commands:
+```{r}
+sudoLines = lines[grepl("sudo", lines)]
+tail(sudoLines, n = 20)
+sudoLines2 = sudoLines[grepl("(?<=COMMAND\\=)[A-Za-z0-9\\.\\-\\=\\,\\_\\:/ ]+$", sudoLines, perl = T)]
+
+sudoCommands = as.data.frame(do.call(rbind, regmatches(sudoLines, regexec("(?<=COMMAND\\=)[A-Za-z0-9\\.\\-\\=\\,\\_\\:/ ]+$", sudoLines, perl = T))))
+sudoCommands$user = do.call(rbind, regmatches(sudoLines, regexec("(?<=USER\\=)[A-Za-z0-9\\.\\-\\=/ ]+(?=;)", sudoLines, perl = T)))
+
+sudoCommands$ip = do.call(rbind, regmatches(sudoLines2, regexec("ip[0-9\\-]+\\b", sudoLines2, perl = T)))
+colnames(sudoCommands) = c("executable", "user", "ip")
+sudoCommands$executable = trimws(sudoCommands$executable, "left")
+head(sudoCommands$executable)
+head(sudoCommands)
+```
+
+
